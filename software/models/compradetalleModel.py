@@ -15,5 +15,5 @@ class CompraDetalle(models.Model):
     subtotal = models.FloatField()
 
     class Meta:
-        managed = False
+        managed = True
         db_table = 'compra_detalle'

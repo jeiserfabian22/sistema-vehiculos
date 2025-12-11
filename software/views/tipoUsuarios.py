@@ -1,12 +1,11 @@
 from datetime import datetime, date
 from decimal import Decimal
 from django.db import connection
-from software.views.apiBusquedaRUcDni import ApisNetPe
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
 import templates
 from software.models.comprasModel import Compras
-from software.models.ProveedoresModel import Proveedores
+from software.models.ProveedoresModel import Proveedor
 from software.models.TipoclienteModel import Tipocliente
 from software.models.compradetalleModel import CompraDetalle
 from software.models.ProductoModel import Producto
@@ -19,15 +18,13 @@ from software.models.UnidadesModel import Unidades
 from software.models.TipousuarioModel import Tipousuario
 from software.models.TipodocumentoModel import Tipodocumento
 from software.models.TipoclienteModel import Tipocliente
-from software.models.ProveedoresModel import Proveedores
-from software.models.NumserieModel import Numserie
 from software.models.ModulosModel import Modulos
 from software.models.empresaModel import Empresa
 from software.models.empleadoModel import Empleado
 from software.models.detalletipousuarioxmodulosModel import Detalletipousuarioxmodulos
 from software.models.detallecategoriaxunidadesModel import Detallecategoriaxunidades
 from software.models.departamentosModel import Departamentos
-from software.models.codigocorreoModel import CodigoCorreo
+
 from software.models.TipoIgvModel import TipoIgv
 from software.models.ClienteModel import Cliente
 

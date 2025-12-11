@@ -2,7 +2,6 @@
 from django.shortcuts import render, get_object_or_404
 from django.http import HttpResponse, JsonResponse
 from software.models.UnidadesModel import Unidades
-from django.core.paginator import Paginator
 from software.models.detalletipousuarioxmodulosModel import Detalletipousuarioxmodulos
 
 # Create your views here.

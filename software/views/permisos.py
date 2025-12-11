@@ -82,6 +82,40 @@ def agregaPermiso(request):
     
     return redirect('permisos')
 
+
+def editarPermiso(request):
+    """
+    Edita los permisos de un tipo de usuario específico
+    Elimina los permisos existentes y crea los nuevos seleccionados
+    """
+    if request.method == 'POST':
+        idTipoUsuario = request.POST.get('idTipoUsuario')
+        permisos = request.POST.getlist("permisosEdit[idmodulo][]")
+        
+        try:
+            # Obtener el tipo de usuario
+            getTipoUsuarios = Tipousuario.objects.get(idtipousuario=idTipoUsuario)
+            
+            # Eliminar los permisos existentes de este tipo de usuario
+            Detalletipousuarioxmodulos.objects.filter(idtipousuario=idTipoUsuario).delete()
+            
+            # Crear los nuevos permisos seleccionados
+            for idPermiso in permisos:
+                modulo = Modulos.objects.get(idmodulo=idPermiso)
+                
+                newPermiso = Detalletipousuarioxmodulos()
+                newPermiso.idtipousuario = getTipoUsuarios
+                newPermiso.idmodulo = modulo
+                newPermiso.save()
+            
+            return redirect('permisos')
+            
+        except Exception as e:
+            return HttpResponse(f"<h1>Error al editar permisos: {str(e)}</h1>")
+    
+    return redirect('permisos')
+
+
 def eliminarPermiso(request,id):
     Detalletipousuarioxmodulos.objects.filter(idtipousuario=id).delete()
     return redirect('permisos')

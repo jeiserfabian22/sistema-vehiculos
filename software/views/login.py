@@ -1,5 +1,5 @@
 # software/views.py
-from django.http import HttpResponse,  JsonResponse
+from django.http import HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
 from django.utils import timezone
 
@@ -8,13 +8,11 @@ from software.models.sucursalesModel import Sucursales
 from software.models.cajaModel import Caja
 from software.models.almacenesModel import Almacenes
 from software.models.AperturaCierreCajaModel import AperturaCierreCaja
-from software.models.twoFactorModel import TwoFactorCode
-from django.core.mail import send_mail
-from django.conf import settings
-from software.utils.encryption_utils import EncryptionManager, PasswordManager
+
 
 def index(request):
     return render(request, 'index.html')
+
 
 def login(request):
     from software.utils.encryption_utils import EncryptionManager, PasswordManager
@@ -23,7 +21,7 @@ def login(request):
     contrasena2 = request.POST.get('contrasena')
     
     if email and contrasena2:
-        # ⭐ NUEVO: Buscar usuario por correo cifrado
+        # Buscar usuario por correo cifrado
         usuarios_todos = Usuario.objects.select_related(
             'idempresa', 'id_sucursal', 'idtipousuario'
         ).filter(estado=1)  # Solo usuarios activos
@@ -44,258 +42,54 @@ def login(request):
                 continue
 
         if usuario_encontrado:
-            # ✅ Credenciales correctas - Generar código 2FA
+            # ✅ Login exitoso - Sin 2FA
+            es_admin = usuario_encontrado.idtipousuario.idtipousuario == 1
             
-            # Invalidar códigos 2FA anteriores
-            TwoFactorCode.objects.filter(
-                usuario=usuario_encontrado,
-                usado=False
-            ).update(usado=True)
+            # Guardar datos en sesión
+            request.session['idtipousuario'] = usuario_encontrado.idtipousuario.idtipousuario
+            request.session['nombrecompleto'] = usuario_encontrado.nombrecompleto
+            request.session['idusuario'] = usuario_encontrado.idusuario
+            request.session['es_admin'] = es_admin
             
-            # Generar nuevo código 2FA
-            codigo_2fa = TwoFactorCode.objects.create(usuario=usuario_encontrado)
+            if usuario_encontrado.idempresa:
+                request.session['idempresa'] = usuario_encontrado.idempresa.idempresa
             
-            # Descifrar correo para envío
-            correo_descifrado = EncryptionManager.decrypt_email(usuario_encontrado.correo)
+            # Asignar sucursal del usuario
+            if usuario_encontrado.id_sucursal:
+                request.session['id_sucursal'] = usuario_encontrado.id_sucursal.id_sucursal
+            elif es_admin:
+                # Admin sin sucursal: usar la primera de su empresa
+                primera_sucursal = Sucursales.objects.filter(
+                    idempresa=usuario_encontrado.idempresa
+                ).first()
+                if primera_sucursal:
+                    request.session['id_sucursal'] = primera_sucursal.id_sucursal
             
-            # Enviar código por correo
-            try:
-                asunto = 'Código de Verificación - MotoVentas'
-                mensaje = f"""
-Hola {usuario_encontrado.nombrecompleto},
-
-Tu código de verificación es:
-
-{codigo_2fa.codigo}
-
-Este código expirará en 10 minutos.
-
-Si no intentaste iniciar sesión, ignora este mensaje.
-
-Saludos,
-Equipo MotoVentas
-                """
-                
-                send_mail(
-                    asunto,
-                    mensaje,
-                    settings.DEFAULT_FROM_EMAIL,
-                    [correo_descifrado],  # Usar correo descifrado
-                    fail_silently=False,
-                )
-                
-                print(f"✅ Código 2FA enviado: {codigo_2fa.codigo} a {correo_descifrado}")
-                
-            except Exception as e:
-                print(f"❌ Error al enviar código 2FA: {str(e)}")
-                error = "Error al enviar el código de verificación"
-                return render(request, 'index.html', {'error': error})
+            # Verificar si tiene caja abierta de sesiones anteriores
+            apertura_abierta = AperturaCierreCaja.objects.filter(
+                idusuario=usuario_encontrado,
+                estado__in=['abierta', 'reabierta']
+            ).first()
             
-            # Guardar temporalmente el ID del usuario en sesión
-            request.session['pending_2fa_user'] = usuario_encontrado.idusuario
-            request.session['pending_2fa_code_id'] = codigo_2fa.id
+            if apertura_abierta:
+                # Restaurar contexto de caja abierta
+                request.session['id_caja'] = apertura_abierta.id_caja.id_caja
+                if apertura_abierta.id_caja.id_sucursal:
+                    request.session['id_sucursal'] = apertura_abierta.id_caja.id_sucursal.id_sucursal
+                print(f"✅ Caja abierta restaurada: {apertura_abierta.id_caja.nombre_caja}")
             
-            # Redirigir a página de verificación 2FA
-            return redirect('verificar_2fa')
+            print(f"✅ Login exitoso: {usuario_encontrado.nombrecompleto} ({'Admin' if es_admin else 'Usuario'})")
+            print(f"   Sucursal: {request.session.get('id_sucursal')}")
+            print(f"   Caja: {request.session.get('id_caja', 'Sin caja')}")
+            
+            # Redirigir al dashboard o página principal
+            return redirect('cpanel')  # Cambia esto por tu vista
         else:
             error = "Correo o contraseña incorrecta"
             data = {"error": error}
             return render(request, 'index.html', data)
     else:
         return HttpResponse("<h1>No tiene acceso señor</h1>")
-
-
-
-def verificar_2fa(request):
-    """
-    Muestra el formulario para ingresar el código 2FA
-    """
-    pending_user_id = request.session.get('pending_2fa_user')
-    
-    if not pending_user_id:
-        return redirect('index')
-    
-    if request.method == 'GET':
-        try:
-            usuario = Usuario.objects.get(idusuario=pending_user_id)
-            return render(request, 'auth/verificar_2fa.html', {
-                'correo': usuario.correo,
-                'nombre': usuario.nombrecompleto
-            })
-        except Usuario.DoesNotExist:
-            return redirect('index')
-    
-    elif request.method == 'POST':
-        codigo_ingresado = request.POST.get('codigo', '').strip()
-        
-        if not codigo_ingresado:
-            return JsonResponse({
-                'error': 'Por favor ingrese el código'
-            }, status=400)
-        
-        try:
-            codigo_2fa_id = request.session.get('pending_2fa_code_id')
-            codigo_2fa = TwoFactorCode.objects.get(id=codigo_2fa_id)
-            
-            if not codigo_2fa.is_valid():
-                return JsonResponse({
-                    'error': 'El código ha expirado o alcanzó el máximo de intentos'
-                }, status=400)
-            
-            codigo_2fa.intentos += 1
-            codigo_2fa.save()
-            
-            if codigo_ingresado == codigo_2fa.codigo:
-                # ✅ Código correcto - Completar login SIN apertura de caja
-                codigo_2fa.usado = True
-                codigo_2fa.save()
-                
-                usuario = codigo_2fa.usuario
-                es_admin = usuario.idtipousuario.idtipousuario == 1  # Ajusta según tu BD
-                
-                # Guardar datos básicos en sesión
-                request.session['idtipousuario'] = usuario.idtipousuario.idtipousuario
-                request.session['nombrecompleto'] = usuario.nombrecompleto
-                request.session['idusuario'] = usuario.idusuario
-                request.session['es_admin'] = es_admin
-                
-                if usuario.idempresa:
-                    request.session['idempresa'] = usuario.idempresa.idempresa
-                
-                # Asignar sucursal del usuario
-                if usuario.id_sucursal:
-                    request.session['id_sucursal'] = usuario.id_sucursal.id_sucursal
-                elif es_admin:
-                    # Admin sin sucursal: usar la primera de su empresa
-                    primera_sucursal = Sucursales.objects.filter(
-                        idempresa=usuario.idempresa
-                    ).first()
-                    if primera_sucursal:
-                        request.session['id_sucursal'] = primera_sucursal.id_sucursal
-                
-                # ⭐ NUEVO: Verificar si tiene caja abierta de sesiones anteriores
-                apertura_abierta = AperturaCierreCaja.objects.filter(
-                    idusuario=usuario,
-                    estado='abierta'
-                ).first()
-                
-                if apertura_abierta:
-                    # Restaurar contexto de caja abierta
-                    request.session['id_caja'] = apertura_abierta.id_caja.id_caja
-                    if apertura_abierta.id_caja.id_sucursal:
-                        request.session['id_sucursal'] = apertura_abierta.id_caja.id_sucursal.id_sucursal
-                    print(f"✅ Caja abierta restaurada: {apertura_abierta.id_caja.nombre_caja}")
-                
-                # Limpiar datos temporales de 2FA
-                request.session.pop('pending_2fa_user', None)
-                request.session.pop('pending_2fa_code_id', None)
-                
-                print(f"✅ Login exitoso: {usuario.nombrecompleto} ({'Admin' if es_admin else 'Usuario'})")
-                print(f"   Sucursal: {request.session.get('id_sucursal')}")
-                print(f"   Caja: {request.session.get('id_caja', 'Sin caja')}")
-                
-                return JsonResponse({
-                    'success': True,
-                    'mensaje': 'Verificación exitosa'
-                })
-            else:
-                intentos_restantes = 3 - codigo_2fa.intentos
-                
-                if intentos_restantes > 0:
-                    return JsonResponse({
-                        'error': f'Código incorrecto. Te quedan {intentos_restantes} intento(s)'
-                    }, status=400)
-                else:
-                    return JsonResponse({
-                        'error': 'Has alcanzado el máximo de intentos. Solicita un nuevo código'
-                    }, status=400)
-        
-        except TwoFactorCode.DoesNotExist:
-            return JsonResponse({
-                'error': 'Código no encontrado'
-            }, status=404)
-        except Exception as e:
-            print(f"❌ Error: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            return JsonResponse({
-                'error': 'Error al verificar el código'
-            }, status=500)
-
-def reenviar_codigo_2fa(request):
-    """
-    Reenvía un nuevo código 2FA
-    """
-    if request.method != 'POST':
-        return JsonResponse({'error': 'Método no permitido'}, status=405)
-    
-    pending_user_id = request.session.get('pending_2fa_user')
-    
-    if not pending_user_id:
-        return JsonResponse({'error': 'Sesión expirada'}, status=401)
-    
-    try:
-        usuario = Usuario.objects.get(idusuario=pending_user_id)
-        
-        # Invalidar códigos anteriores
-        TwoFactorCode.objects.filter(
-            usuario=usuario,
-            usado=False
-        ).update(usado=True)
-        
-        # Generar nuevo código
-        codigo_2fa = TwoFactorCode.objects.create(usuario=usuario)
-        
-        # Enviar por correo
-        asunto = 'Nuevo Código de Verificación - MotoVentas'
-        mensaje = f"""
-Hola {usuario.nombrecompleto},
-
-Tu nuevo código de verificación es:
-
-{codigo_2fa.codigo}
-
-Este código expirará en 10 minutos.
-
-Saludos,
-Equipo MotoVentas
-        """
-        
-        send_mail(
-            asunto,
-            mensaje,
-            settings.DEFAULT_FROM_EMAIL,
-            [usuario.correo],
-            fail_silently=False,
-        )
-        
-        # Actualizar ID del código en sesión
-        request.session['pending_2fa_code_id'] = codigo_2fa.id
-        
-        print(f"✅ Nuevo código 2FA enviado: {codigo_2fa.codigo}")
-        
-        return JsonResponse({
-            'success': True,
-            'mensaje': 'Se ha enviado un nuevo código a tu correo'
-        })
-        
-    except Usuario.DoesNotExist:
-        return JsonResponse({'error': 'Usuario no encontrado'}, status=404)
-    except Exception as e:
-        print(f"Error: {str(e)}")
-        return JsonResponse({
-            'error': 'Error al reenviar el código'
-        }, status=500)
-
-
-
-def cancelar_2fa(request):
-    """
-    Cancela el proceso de 2FA y vuelve al login
-    """
-    request.session.pop('pending_2fa_user', None)
-    request.session.pop('pending_2fa_code_id', None)
-    return redirect('index')
 
 
 def logout(request):
@@ -374,6 +168,7 @@ def cambiar_contexto(request):
             'error': 'Error al cambiar contexto'
         }, status=500)
 
+
 def obtener_datos_apertura(request):
     """
     Devuelve las opciones disponibles según el tipo de usuario
@@ -420,7 +215,7 @@ def obtener_datos_apertura(request):
             for caja in cajas:
                 apertura_activa = AperturaCierreCaja.objects.filter(
                     id_caja=caja,
-                    estado='abierta'
+                    estado__in=['abierta', 'reabierta']
                 ).exclude(idusuario=usuario).exists()  # Excluir aperturas propias
                 
                 if not apertura_activa:
@@ -444,12 +239,17 @@ def obtener_datos_apertura(request):
     
     return JsonResponse(data)
 
+
 def obtener_cajas_almacenes(request):
     """
     Obtiene cajas y almacenes de una sucursal específica
     """
     id_sucursal = request.GET.get('id_sucursal')
     idusuario = request.session.get('idusuario')
+    
+    print(f"🔍 DEBUG obtener_cajas_almacenes:")
+    print(f"   id_sucursal recibido: {id_sucursal}")
+    print(f"   idusuario: {idusuario}")
     
     if not id_sucursal:
         return JsonResponse({'error': 'Sucursal no especificada'}, status=400)
@@ -461,13 +261,19 @@ def obtener_cajas_almacenes(request):
             estado=1
         )
         
+        print(f"   Total cajas encontradas: {cajas.count()}")
+        for caja in cajas:
+            print(f"   - Caja: {caja.nombre_caja} (ID: {caja.id_caja})")
+        
         # Filtrar cajas disponibles
         cajas_disponibles = []
         for caja in cajas:
             apertura_activa = AperturaCierreCaja.objects.filter(
                 id_caja=caja,
-                estado='abierta'
+                estado__in=['abierta', 'reabierta']
             ).exclude(idusuario_id=idusuario).exists()
+            
+            print(f"   - Caja {caja.nombre_caja}: apertura_activa={apertura_activa}")
             
             if not apertura_activa:
                 cajas_disponibles.append({
@@ -476,11 +282,15 @@ def obtener_cajas_almacenes(request):
                     'numero': caja.numero_caja
                 })
         
+        print(f"   Cajas disponibles: {len(cajas_disponibles)}")
+        
         # Almacenes activos
         almacenes = Almacenes.objects.filter(
             id_sucursal_id=id_sucursal,
             estado=1
         )
+        
+        print(f"   Total almacenes encontrados: {almacenes.count()}")
         
         data = {
             'cajas': cajas_disponibles,
@@ -490,11 +300,16 @@ def obtener_cajas_almacenes(request):
             ]
         }
         
+        print(f"   ✅ Respuesta: {data}")
+        
         return JsonResponse(data)
         
     except Exception as e:
-        print(f"Error: {str(e)}")
+        print(f"❌ Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return JsonResponse({'error': 'Error al obtener datos'}, status=500)
+
 
 def abrir_caja(request):
     """
@@ -533,7 +348,7 @@ def abrir_caja(request):
         # Verificar que no tenga otra caja abierta
         apertura_propia = AperturaCierreCaja.objects.filter(
             idusuario=usuario,
-            estado='abierta'
+            estado__in=['abierta', 'reabierta']
         ).first()
         
         if apertura_propia:
@@ -545,7 +360,7 @@ def abrir_caja(request):
         # Verificar que la caja no esté abierta por otro usuario
         apertura_otra = AperturaCierreCaja.objects.filter(
             id_caja=caja,
-            estado='abierta'
+            estado__in=['abierta', 'reabierta']
         ).first()
         
         if apertura_otra:
@@ -558,7 +373,6 @@ def abrir_caja(request):
         if es_admin and id_sucursal:
             request.session['id_sucursal'] = int(id_sucursal)
         
-        # ⭐ CORRECCIÓN: Usar timezone.now() directamente
         ahora = timezone.now()
         
         # Crear apertura
@@ -566,8 +380,8 @@ def abrir_caja(request):
             id_caja=caja,
             idusuario=usuario,
             saldo_inicial=monto,
-            fecha_apertura=ahora,  # Guardar fecha y hora completa
-            hora_apertura=ahora.time(),  # Extraer solo la hora
+            fecha_apertura=ahora,
+            hora_apertura=ahora.time(),
             estado='abierta'
         )
         
@@ -632,7 +446,7 @@ def cerrar_caja(request):
         # Buscar apertura activa del usuario
         apertura_abierta = AperturaCierreCaja.objects.filter(
             idusuario_id=idusuario,
-            estado='abierta'
+            estado__in=['abierta', 'reabierta']
         ).first()
         
         if not apertura_abierta:
@@ -641,13 +455,12 @@ def cerrar_caja(request):
                 'error': 'No tienes una caja abierta'
             }, status=400)
         
-        # ⭐ CORRECCIÓN: Usar timezone.now() directamente
         ahora = timezone.now()
         
         # Cerrar caja
         apertura_abierta.saldo_final = saldo_final if saldo_final else apertura_abierta.saldo_inicial
-        apertura_abierta.fecha_cierre = ahora  # Guardar fecha y hora completa
-        apertura_abierta.hora_cierre = ahora.time()  # Extraer solo la hora
+        apertura_abierta.fecha_cierre = ahora
+        apertura_abierta.hora_cierre = ahora.time()
         apertura_abierta.estado = 'cerrada'
         apertura_abierta.save()
         
@@ -679,11 +492,79 @@ def cerrar_caja(request):
         }, status=500)
 
 
-
-
-
-
-
-
-
-
+def obtener_saldo_actual(request):
+    """
+    Devuelve el saldo actual de la caja abierta O reabierta del usuario
+    """
+    idusuario = request.session.get('idusuario')
+    
+    if not idusuario:
+        return JsonResponse({'error': 'No autenticado'}, status=401)
+    
+    try:
+        # Buscar apertura activa O reabierta
+        apertura = AperturaCierreCaja.objects.filter(
+            idusuario_id=idusuario,
+            estado__in=['abierta', 'reabierta']
+        ).first()
+        
+        if not apertura:
+            return JsonResponse({
+                'ok': False,
+                'error': 'No hay caja abierta'
+            }, status=400)
+        
+        from software.models.movimientoCajaModel import MovimientoCaja
+        from django.db.models import Sum
+        
+        # Filtrar movimientos de esta apertura
+        movimientos = MovimientoCaja.objects.filter(
+            id_movimiento=apertura,
+            estado=1
+        )
+        
+        print("=" * 60)
+        print("🔍 DEBUG SALDO ACTUAL")
+        print(f"   Caja: {apertura.id_caja.nombre_caja}")
+        print(f"   ID Apertura (id_movimiento): {apertura.id_movimiento}")
+        print(f"   Estado: {apertura.estado}")
+        print(f"   Saldo inicial: S/ {apertura.saldo_inicial}")
+        print(f"   Total movimientos: {movimientos.count()}")
+        
+        # Calcular ingresos y egresos
+        total_ingresos = movimientos.filter(
+            tipo_movimiento='ingreso'
+        ).aggregate(total=Sum('monto'))['total'] or 0
+        
+        total_egresos = movimientos.filter(
+            tipo_movimiento='egreso'
+        ).aggregate(total=Sum('monto'))['total'] or 0
+        
+        print(f"   Total ingresos: S/ {total_ingresos}")
+        print(f"   Total egresos: S/ {total_egresos}")
+        
+        # Saldo actual = Saldo inicial + Ingresos - Egresos
+        saldo_actual = float(apertura.saldo_inicial) + float(total_ingresos) - float(total_egresos)
+        
+        print(f"   ✅ SALDO ACTUAL: S/ {saldo_actual}")
+        print("=" * 60)
+        
+        return JsonResponse({
+            'ok': True,
+            'saldo_actual': saldo_actual,
+            'saldo_inicial': float(apertura.saldo_inicial),
+            'total_ingresos': float(total_ingresos),
+            'total_egresos': float(total_egresos),
+            'caja': apertura.id_caja.nombre_caja,
+            'fecha_apertura': apertura.fecha_apertura.strftime('%d/%m/%Y %H:%M'),
+            'es_reabierta': apertura.estado == 'reabierta'
+        })
+        
+    except Exception as e:
+        print(f"❌ Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return JsonResponse({
+            'ok': False,
+            'error': 'Error al obtener saldo'
+        }, status=500)
