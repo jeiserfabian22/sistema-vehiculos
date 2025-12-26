@@ -957,10 +957,11 @@ def buscar_cuotas_cliente(request):
     
     return JsonResponse({'error': 'Método no permitido'}, status=400)
 
+
 def imprimir_recibo_pago(request, idpagocuota):
     """
     Genera un PDF del recibo de pago de cuota en formato TICKET 80mm
-    Con la estructura exacta del recibo físico de la empresa
+    Estructura exacta del recibo físico de D CREDITOS E.I.R.L
     """
     try:
         from reportlab.lib import colors
@@ -971,7 +972,8 @@ def imprimir_recibo_pago(request, idpagocuota):
         from io import BytesIO
         import os
         from django.conf import settings
-        from software.models.VentaDetalleModel import VentaDetalle
+        from software.models.empresaModel import Empresa
+        from django.utils import timezone
         
         # Obtener el pago
         pago = get_object_or_404(PagoCuota, idpagocuota=idpagocuota)
@@ -980,14 +982,53 @@ def imprimir_recibo_pago(request, idpagocuota):
         venta = cuota.idventa
         cliente = venta.idcliente
         
-        # Obtener detalles de productos financiados
-        detalles = VentaDetalle.objects.filter(idventa=venta, estado=1).select_related(
-            'id_vehiculo__idproducto',
-            'id_repuesto_comprado__id_repuesto'
+        # ✅ OBTENER LA EMPRESA
+        try:
+            if venta.idempresa:
+                empresa = Empresa.objects.get(idempresa=venta.idempresa, activo=True)
+            else:
+                empresa = Empresa.objects.filter(activo=True).first()
+            
+            if not empresa:
+                return HttpResponse("No se encontró información de la empresa.", status=400)
+        except Empresa.DoesNotExist:
+            return HttpResponse(f"La empresa no existe en el sistema.", status=400)
+        
+        # ✅ OBTENER VEHÍCULO Y PLACA
+        from software.models.VentaDetalleModel import VentaDetalle
+        detalles = VentaDetalle.objects.filter(idventa=venta, estado=1, tipo_item='vehiculo').select_related(
+            'id_vehiculo__idproducto'
         )
         
+        placa_vehiculo = "SIN PLACA"
+        nombre_vehiculo = "Vehículo"
+        
+        if detalles.exists():
+            primer_vehiculo = detalles.first().id_vehiculo
+            if primer_vehiculo:
+                nombre_vehiculo = primer_vehiculo.idproducto.nomproducto
+                # ✅ OBTENER PLACA
+                if primer_vehiculo.placas and primer_vehiculo.placas.strip():
+                    placa_vehiculo = primer_vehiculo.placas.strip()
+                else:
+                    placa_vehiculo = "PENDIENTE"
+        
         # Generar número de recibo
-        numero_recibo = f"RI01-{str(idpagocuota).zfill(8)}"
+        numero_recibo = f"RI{str(venta.id_sucursal.id_sucursal).zfill(2)}-{str(idpagocuota).zfill(6)}"
+        
+        # ✅ CALCULAR CUOTAS PENDIENTES Y ATRASADAS
+        cuotas_totales = CuotasVenta.objects.filter(idventa=venta, estado=1).count()
+        cuotas_pagadas = CuotasVenta.objects.filter(idventa=venta, estado=1, estado_pago='Pagado').count()
+        cuotas_pendientes = cuotas_totales - cuotas_pagadas
+        
+        # Cuotas atrasadas (vencidas y no pagadas)
+        hoy = timezone.now().date()
+        cuotas_atrasadas = CuotasVenta.objects.filter(
+            idventa=venta,
+            estado=1,
+            estado_pago__in=['Pendiente', 'Parcial'],
+            fecha_vencimiento__lt=hoy
+        ).count()
         
         # Crear el PDF en memoria
         buffer = BytesIO()
@@ -1013,62 +1054,16 @@ def imprimir_recibo_pago(request, idpagocuota):
         style_company = ParagraphStyle(
             'CompanyName',
             parent=styles['Normal'],
-            fontSize=10,
+            fontSize=9,
             textColor=colors.black,
             alignment=TA_CENTER,
             fontName='Helvetica-Bold',
-            spaceAfter=1*mm,
-            leading=11
+            spaceAfter=0.5*mm,
+            leading=10
         )
         
         style_normal_center = ParagraphStyle(
             'NormalCenter',
-            parent=styles['Normal'],
-            fontSize=8,
-            alignment=TA_CENTER,
-            spaceAfter=1*mm,
-            leading=9
-        )
-        
-        style_label = ParagraphStyle(
-            'Label',
-            parent=styles['Normal'],
-            fontSize=8,
-            fontName='Helvetica-Bold',
-            spaceAfter=0.5*mm,
-            leading=9
-        )
-        
-        style_value = ParagraphStyle(
-            'Value',
-            parent=styles['Normal'],
-            fontSize=8,
-            spaceAfter=0.5*mm,
-            leading=9
-        )
-        
-        style_title = ParagraphStyle(
-            'Title',
-            parent=styles['Normal'],
-            fontSize=11,
-            fontName='Helvetica-Bold',
-            alignment=TA_CENTER,
-            spaceAfter=2*mm,
-            leading=12
-        )
-        
-        style_importe = ParagraphStyle(
-            'Importe',
-            parent=styles['Normal'],
-            fontSize=14,
-            fontName='Helvetica-Bold',
-            alignment=TA_CENTER,
-            spaceAfter=2*mm,
-            leading=16
-        )
-        
-        style_small = ParagraphStyle(
-            'Small',
             parent=styles['Normal'],
             fontSize=7,
             alignment=TA_CENTER,
@@ -1076,134 +1071,241 @@ def imprimir_recibo_pago(request, idpagocuota):
             leading=8
         )
         
+        style_label = ParagraphStyle(
+            'Label',
+            parent=styles['Normal'],
+            fontSize=7,
+            alignment=TA_LEFT,
+            spaceAfter=0.5*mm,
+            leading=8
+        )
+        
+        style_title = ParagraphStyle(
+            'Title',
+            parent=styles['Normal'],
+            fontSize=9,
+            fontName='Helvetica-Bold',
+            alignment=TA_CENTER,
+            spaceAfter=1*mm,
+            leading=10
+        )
+        
+        style_importe = ParagraphStyle(
+            'Importe',
+            parent=styles['Normal'],
+            fontSize=12,
+            fontName='Helvetica-Bold',
+            alignment=TA_CENTER,
+            spaceAfter=1*mm,
+            leading=14
+        )
+        
+        style_small = ParagraphStyle(
+            'Small',
+            parent=styles['Normal'],
+            fontSize=6,
+            alignment=TA_CENTER,
+            spaceAfter=0.5*mm,
+            leading=7
+        )
+        
+        style_small_left = ParagraphStyle(
+            'SmallLeft',
+            parent=styles['Normal'],
+            fontSize=6,
+            alignment=TA_LEFT,
+            spaceAfter=0.5*mm,
+            leading=7
+        )
+        
         # ==========================================
         # LOGO
         # ==========================================
-        try:
-            logo_path = os.path.join(settings.BASE_DIR, 'static', 'img', 'empresa', 'logo.png')
-            if os.path.exists(logo_path):
-                logo = Image(logo_path, width=40*mm, height=30*mm)
-                logo.hAlign = 'CENTER'
-                elements.append(logo)
-                elements.append(Spacer(1, 2*mm))
-        except Exception as e:
-            print(f"No se pudo cargar el logo: {str(e)}")
+        if empresa.logo:
+            try:
+                logo_path = os.path.join(settings.MEDIA_ROOT, empresa.logo)
+                if not os.path.exists(logo_path):
+                    logo_path = os.path.join(settings.BASE_DIR, 'static', empresa.logo)
+                
+                if os.path.exists(logo_path):
+                    logo = Image(logo_path, width=35*mm, height=20*mm)
+                    logo.hAlign = 'CENTER'
+                    elements.append(logo)
+                    elements.append(Spacer(1, 2*mm))
+            except Exception as e:
+                print(f"No se pudo cargar el logo: {str(e)}")
         
         # ==========================================
         # DATOS DE LA EMPRESA
         # ==========================================
-        elements.append(Paragraph("PERALTA PINEDO & ASOCIADOS S.A.C.", style_company))
-        elements.append(Paragraph("✉ peraltamotorssac@gmail.com", style_normal_center))
-        elements.append(Paragraph("☎ 993989875-946607470", style_normal_center))
-        elements.append(Paragraph("⌂ TARAPOTO", style_normal_center))
-        elements.append(Spacer(1, 2*mm))
-        elements.append(Paragraph("<b>RUC: 20614707373</b>", style_normal_center))
+        nombre_empresa = empresa.razonsocial if empresa.razonsocial else empresa.nombrecomercial
+        elements.append(Paragraph(nombre_empresa.upper(), style_company))
         
-        elements.append(Spacer(1, 3*mm))
+        # Dirección (ajustar formato según imagen)
+        direccion_local = empresa.direccion.upper() if empresa.direccion else "TARAPOTO"
+        elements.append(Paragraph(f"Local: {direccion_local}", style_small))
         
-        # ==========================================
-        # TÍTULO DEL RECIBO
-        # ==========================================
-        elements.append(Paragraph(f"<b>RECIBO INGRESO ({numero_recibo})</b>", style_title))
-        
-        elements.append(Spacer(1, 3*mm))
-        
-        # ==========================================
-        # DATOS DEL CLIENTE (sin tabla, solo texto)
-        # ==========================================
-        elements.append(Paragraph(f"<b>DNI/RUC:</b> {cliente.numdoc or '---'}", style_label))
-        elements.append(Paragraph(f"<b>RAZON SOCIAL:</b> {cliente.razonsocial}", style_label))
-        
-        direccion = cliente.direccion or '-JR MPSM'
-        elements.append(Paragraph(f"<b>DIRECCION:</b> {direccion}", style_label))
+        elements.append(Paragraph(f"TELEFONOS: {empresa.telefono}", style_small))
+        elements.append(Paragraph(f"<b>RUC: {empresa.ruc}</b>", style_normal_center))
+        elements.append(Paragraph(f"<b>RECIBO {numero_recibo}</b>", style_title))
         
         elements.append(Spacer(1, 2*mm))
         
         # ==========================================
-        # FECHA OPERACIÓN (con formato solicitado)
+        # DATOS DEL CLIENTE
         # ==========================================
-        fecha_str = pago.fecha_pago.strftime('%Y-%m-%d')
-        hora_str = pago.fecha_pago.strftime('%I:%M %p')
+        elements.append(Paragraph("<b>CLIENTE</b>", style_label))
+        elements.append(Paragraph(f"DNI: {cliente.numdoc or '---'}", style_label))
+        elements.append(Paragraph(cliente.razonsocial.upper(), style_small_left))
         
-        elements.append(Paragraph(f"<b>FECHA OPERACIÓN:</b> {fecha_str} <i>{hora_str}</i>", style_label))
+        direccion = cliente.direccion or 'JR MPSM'
+        elements.append(Paragraph(direccion.upper(), style_small_left))
+
+        elements.append(Paragraph(f'CONTRATO N° : {credito.codigo_credito}', style_label))
         
         elements.append(Spacer(1, 2*mm))
         
         # ==========================================
-        # CONCEPTO con descripción de productos
+        # DETALLE DE PRODUCTOS/VEHÍCULOS
         # ==========================================
-        # Construir descripción de productos
-        descripciones = []
-        for detalle in detalles:
+        elements.append(Paragraph("<b>DESCRIPCIÓN</b>", style_label))
+        elements.append(Spacer(1, 1*mm))
+        
+        # Obtener todos los detalles de la venta
+        detalles_venta = VentaDetalle.objects.filter(idventa=venta, estado=1).select_related(
+            'id_vehiculo__idproducto',
+            'id_repuesto_comprado__id_repuesto'
+        )
+        
+        # Construir lista de productos
+        for detalle in detalles_venta:
             if detalle.tipo_item == 'vehiculo' and detalle.id_vehiculo:
                 vehiculo = detalle.id_vehiculo
-                desc = f"{vehiculo.idproducto.nomproducto} (Motor: {vehiculo.serie_motor}, Chasis: {vehiculo.serie_chasis})"
-                descripciones.append(desc)
+                nombre_producto = vehiculo.idproducto.nomproducto
+                
+                # Agregar nombre del producto
+                elements.append(Paragraph(nombre_producto.upper(), style_small_left))
+                
+                # Agregar serie motor si existe
+                if vehiculo.serie_motor:
+                    elements.append(Paragraph(f"Motor: {vehiculo.serie_motor}", style_small_left))
+                
+                # Agregar serie chasis si existe
+                if vehiculo.serie_chasis:
+                    elements.append(Paragraph(f"Chasis: {vehiculo.serie_chasis}", style_small_left))
+                
+                # ✅ AGREGAR PLACA DEBAJO DEL CHASIS
+                if vehiculo.placas and vehiculo.placas.strip():
+                    elements.append(Paragraph(f"Placa: {vehiculo.placas.strip()}", style_small_left))
+                else:
+                    elements.append(Paragraph("Placa: PENDIENTE", style_small_left))
+                
             elif detalle.tipo_item == 'repuesto' and detalle.id_repuesto_comprado:
                 repuesto = detalle.id_repuesto_comprado
-                codigo = repuesto.codigo_barras or 'S/N'
-                desc = f"{repuesto.id_repuesto.nombre} (Cód: {codigo})"
-                descripciones.append(desc)
+                nombre_repuesto = repuesto.id_repuesto.nombre
+                
+                # Agregar nombre del repuesto
+                elements.append(Paragraph(nombre_repuesto.upper(), style_small_left))
+                
+                # Agregar código de barras si existe
+                if repuesto.codigo_barras:
+                    elements.append(Paragraph(f"Código: {repuesto.codigo_barras}", style_small_left))
         
-        descripcion_productos = ", ".join(descripciones) if descripciones else "Productos varios"
-        
-        elements.append(Paragraph(f"<b>CONCEPTO:</b> COBRANZA DE CUOTAS", style_label))
-        elements.append(Paragraph(f"<i>{descripcion_productos}</i>", style_small))
-        
-        elements.append(Spacer(1, 3*mm))
+        elements.append(Spacer(1, 2*mm))
         
         # ==========================================
-        # TABLA DE CRÉDITO (estructura exacta de la imagen)
+        # FECHA Y HORA
         # ==========================================
-        data_credito = [
-            ['CREDITO', 'FECHA', 'IMPORTE', 'SALDO'],
-            [
-                credito.codigo_credito,
-                credito.fecha_credito.strftime('%Y-%m-%d'),
-                f"{credito.monto_total:,.2f}",
-                f"{credito.saldo_pendiente:,.2f}"
-            ]
+        fecha_str = pago.fecha_pago.strftime('%d/%m/%Y')
+        hora_str = pago.fecha_pago.strftime('%H:%M')
+        
+        elements.append(Paragraph(f"<b>FECHA EMISION:</b> {fecha_str}", style_label))
+        elements.append(Paragraph(f"<b>HORA:</b> {hora_str}", style_small_left))
+        
+        elements.append(Spacer(1, 1*mm))
+        
+        # ==========================================
+        # MONEDA Y FORMA DE PAGO
+        # ==========================================
+        elements.append(Paragraph("<b>MONEDA: SOLES</b>", style_small_left))
+        
+        tipo_pago_nombre = pago.id_tipo_pago.nombre if pago.id_tipo_pago else 'EFECTIVO'
+        elements.append(Paragraph(f"<b>FORMA DE PAGO: {tipo_pago_nombre.upper()}</b>", style_small_left))
+        
+        # Cajero
+        cajero = pago.idusuario.nombrecompleto.split()[0].upper()
+        elements.append(Paragraph(f"<b>CAJERO(A): {cajero}</b>", style_small_left))
+        
+        elements.append(Spacer(1, 2*mm))
+        
+        # ==========================================
+        # CONCEPTO Y TOTAL (en la misma línea)
+        # ==========================================
+        data_concepto = [
+            ['CONCEPTO', 'TOTAL'],
+            [f'Cuota N° {cuota.numero_cuota}', f'{cuota.total:.2f}']
         ]
         
-        # Anchos: CREDITO(15mm) FECHA(20mm) IMPORTE(19mm) SALDO(19mm) = 73mm
-        table_credito = Table(data_credito, colWidths=[15*mm, 20*mm, 19*mm, 19*mm])
-        table_credito.setStyle(TableStyle([
-            # Encabezado
+        table_concepto = Table(data_concepto, colWidths=[50*mm, 24*mm])
+        table_concepto.setStyle(TableStyle([
+            # Primera fila (encabezados) - en negrita
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 8),
-            ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
-            ('BACKGROUND', (0, 0), (-1, 0), colors.white),
+            ('FONTSIZE', (0, 0), (-1, 0), 7),
+            ('ALIGN', (0, 0), (0, 0), 'LEFT'),
+            ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
             
-            # Contenido
-            ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
-            ('FONTSIZE', (0, 1), (-1, -1), 8),
-            ('ALIGN', (0, 1), (0, -1), 'CENTER'),
-            ('ALIGN', (1, 1), (1, -1), 'CENTER'),
-            ('ALIGN', (2, 1), (-1, -1), 'RIGHT'),
+            # Segunda fila (monto) - en negrita
+            ('FONTNAME', (0, 1), (-1, 1), 'Helvetica'),
+            ('FONTSIZE', (0, 1), (-1, 1), 7),
+            ('ALIGN', (0, 1), (0, 1), 'LEFT'),
+            ('ALIGN', (1, 1), (1, 1), 'RIGHT'),
             
-            # Bordes
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('TOPPADDING', (0, 0), (-1, -1), 3),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ('TOPPADDING', (0, 0), (-1, -1), 1),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
         ]))
-        elements.append(table_credito)
+        elements.append(table_concepto)
         
-        elements.append(Spacer(1, 4*mm))
-        
-        # ==========================================
-        # "Pago de: Cuota XXX"
-        # ==========================================
-        elements.append(Paragraph(f"<b>Pago de: Cuota {str(cuota.numero_cuota).zfill(3)}</b>", style_normal_center))
-        
-        elements.append(Spacer(1, 4*mm))
+        elements.append(Spacer(1, 2*mm))
         
         # ==========================================
-        # IMPORTE (grande, como en la imagen)
+        # PAGO LETRA
         # ==========================================
-        elements.append(Paragraph(f"<b>IMPORTE: {pago.monto_pago:.2f}</b>", style_importe))
+        elements.append(Paragraph("<b>PAGO CUOTA</b>", style_normal_center))
+        
+        # ✅ DETERMINAR SI ES PAGO COMPLETO O AMORTIZADO
+        if cuota.saldo_cuota == 0:
+            tipo_pago_letra = "CUOTA PAGADA"
+        else:
+            tipo_pago_letra = "AMORTIZADO"
+        
+        # ✅ LETRA PAGADA = NÚMERO DE CUOTA + TIPO DE PAGO
+        elements.append(Paragraph(
+            f"<b>CUOTA PAGADA: ({cuota.numero_cuota}) {tipo_pago_letra}</b>", 
+            style_label
+        ))
+        
+        # Fecha de vencimiento
+        fecha_venc = cuota.fecha_vencimiento.strftime('%d/%m/%Y')
+        elements.append(Paragraph(fecha_venc, style_small_left))
+        
+        # ✅ PENDIENTES Y ATRASADAS
+        elements.append(Paragraph(
+            f"<b>PENDIENTES {cuotas_pendientes} / ATRAZADAS {cuotas_atrasadas}</b>", 
+            style_small_left
+        ))
         
         elements.append(Spacer(1, 3*mm))
+        
+        # ==========================================
+        # IMPORTE TOTAL
+        # ==========================================
+        elements.append(Paragraph(
+            f"<b>Importe Total {pago.monto_pago:.2f}</b>", 
+            style_importe
+        ))
+        
+        elements.append(Spacer(1, 2*mm))
         
         # ==========================================
         # MONTO EN LETRAS
@@ -1214,38 +1316,40 @@ def imprimir_recibo_pago(request, idpagocuota):
         except:
             parte_entera = int(pago.monto_pago)
             parte_decimal = int((pago.monto_pago - parte_entera) * 100)
-            monto_letras = f"Y {parte_decimal:02d}/100"
+            monto_letras = f"CON {parte_decimal:02d}/100"
         
-        elements.append(Paragraph(f"<b>SON {monto_letras} SOLES</b>", style_normal_center))
+        elements.append(Paragraph(
+            f"<b>SON: {monto_letras.upper()} SOLES</b>", 
+            style_normal_center
+        ))
         
-        elements.append(Spacer(1, 4*mm))
+        elements.append(Spacer(1, 3*mm))
         
         # ==========================================
-        # INFORMACIÓN ADICIONAL
+        # MENSAJE DE RETENCIÓN (SIEMPRE APARECE)
         # ==========================================
-        elements.append(Paragraph("Cobro cuotas", style_normal_center))
-        elements.append(Paragraph(f"<b>USUARIO:</b> {pago.idusuario.nombrecompleto} - Caja principal", style_small))
+        elements.append(Paragraph(
+            "<b>Vehículo Sujeto Hacer Retenido</b>", 
+            style_small
+        ))
+        elements.append(Paragraph(
+            "<b>Póngase al día en sus pagos.</b>", 
+            style_small
+        ))
+        elements.append(Paragraph(
+            "<b>Plazo: 5 días.</b>", 
+            style_small
+        ))
         
-        # Tipo de pago (si aplica)
-        if pago.id_tipo_pago:
-            elements.append(Spacer(1, 2*mm))
-            elements.append(Paragraph(f"<b>Tipo de pago:</b> {pago.id_tipo_pago.nombre}", style_small))
-        
-        # Número de operación (si existe)
-        if pago.numero_operacion:
-            elements.append(Paragraph(f"<b>N° Operación:</b> {pago.numero_operacion}", style_small))
-        
-        # Observaciones (si existen)
-        if pago.observaciones:
-            elements.append(Spacer(1, 2*mm))
-            elements.append(Paragraph(f"<b>Obs:</b> {pago.observaciones[:50]}", style_small))
-        
-        elements.append(Spacer(1, 5*mm))
+        elements.append(Spacer(1, 3*mm))
         
         # ==========================================
         # LÍNEA DE CORTE
         # ==========================================
-        elements.append(Paragraph("- - - - - - - - - - - - - - - - - - - - - - - -", style_normal_center))
+        elements.append(Paragraph(
+            "- - - - - - - - - - - - - - - - - - - - - - - -", 
+            style_normal_center
+        ))
         
         # Construir el PDF
         doc.build(elements)
@@ -1262,6 +1366,3 @@ def imprimir_recibo_pago(request, idpagocuota):
         import traceback
         traceback.print_exc()
         return HttpResponse(f"Error al generar el recibo: {str(e)}", status=500)
-    
-
-    
